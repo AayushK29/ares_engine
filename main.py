@@ -10,8 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import init_db, get_db_pool
 from schemas import PartyJoin
 
-# --- WEBSOCKET MANAGER ---
-
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, WebSocket] = {}
@@ -32,7 +30,6 @@ class ConnectionManager:
 
 ws_manager = ConnectionManager()
 
-# --- UTILITY FUNCTIONS ---
 
 def calculate_team_elo(party_list):
     """Calculates average Elo for a list of parties (team)."""
@@ -41,8 +38,6 @@ def calculate_team_elo(party_list):
         return 0
     total_elo = sum(p['total_elo'] for p in all_players)
     return total_elo / len(all_players)
-
-# --- BACKGROUND TASKS (THE ARES ENGINE) ---
 
 async def continuous_cleanup(app):
     """Purges players from matchmaking_queue if they haven't sent a heartbeat."""
@@ -68,7 +63,6 @@ async def continuous_matchmaker(app):
     The Autonomous Matchmaking Loop. 
     Sweeps active regions every 3 seconds to find and execute matches using Advanced Bin-Packing.
     """
-    # In a real system, these would be fetched from a 'regions' DB table
     active_regions = ["IN", "US-EAST"] 
 
     while True:
@@ -76,21 +70,20 @@ async def continuous_matchmaker(app):
             if hasattr(app.state, "pool"):
                 async with app.state.pool.acquire() as conn:
                     for region in active_regions:
-                        # The "Drain Loop" - Keep matching in this region until empty
                         while True:
                             async with conn.transaction():
-                                # 1. Check for the oldest player to determine wait time
+                                # Check oldest player to see wait time
                                 oldest = await conn.fetchrow('''
                                     SELECT entered_at FROM matchmaking_queue 
                                     WHERE region = $1 ORDER BY entered_at ASC LIMIT 1
                                 ''', region)
 
                                 if not oldest:
-                                    break # Queue is entirely empty for this region
+                                    break # Empty queue
 
                                 wait_time = (datetime.now(timezone.utc) - oldest['entered_at'].replace(tzinfo=timezone.utc)).total_seconds()
                                 
-                                # 2. Fetch a healthy batch of players (LIMIT 100 ensures we don't slice parties in half)
+                                # 2. Fetch a healthy batch of players 
                                 base_query = '''
                                     SELECT q.*, p.username, p.total_elo 
                                     FROM matchmaking_queue q 
@@ -106,14 +99,14 @@ async def continuous_matchmaker(app):
                                 if len(records) < 10:
                                     break  # Not enough total players to even try
 
-                                # 3. Group records into indivisible parties
+                                # Group records into indivisible parties
                                 parties = defaultdict(list)
                                 for r in records:
                                     parties[str(r['party_id'])].append(dict(r))
 
                                 party_list = list(parties.items())
 
-                                # 4. The "Tetris" Algorithm: Recursive Subset Sum to perfectly pack 5 slots
+                                # Tetris
                                 def find_team(available_parties, target_size=5):
                                     def backtrack(index, current_size, current_team):
                                         if current_size == target_size:
@@ -123,17 +116,15 @@ async def continuous_matchmaker(app):
                                         
                                         p_id, players = available_parties[index]
                                         
-                                        # Branch 1: Try adding this party to the team
                                         res = backtrack(index + 1, current_size + len(players), current_team + [(p_id, players)])
                                         if res is not None:
                                             return res
                                             
-                                        # Branch 2: Skip this party and try the next ones
                                         return backtrack(index + 1, current_size, current_team)
                                         
                                     return backtrack(0, 0, [])
 
-                                # 5. Form Team Alpha
+                                # Form Team Alpha
                                 team_a_data = find_team(party_list)
                                 if not team_a_data:
                                     break  # Break out to wait for more players to fill gaps
@@ -142,18 +133,18 @@ async def continuous_matchmaker(app):
                                 used_a_ids = {p_id for p_id, _ in team_a_data}
                                 remaining_parties = [p for p in party_list if p[0] not in used_a_ids]
 
-                                # 6. Form Team Bravo
+                                #Form Team Bravo
                                 team_b_data = find_team(remaining_parties)
                                 if not team_b_data:
                                     break  # Break out to wait for more players to fill gaps
 
-                                # 7. Unpack the optimized teams
+                                #Unpack the optimized teams
                                 team_a = [players for _, players in team_a_data]
                                 team_b = [players for _, players in team_b_data]
 
                                 used_party_ids = [uuid.UUID(p_id) for p_id, _ in team_a_data] + [uuid.UUID(p_id) for p_id, _ in team_b_data]
 
-                                # 8. Validate Elo Thresholds
+                                # Validate Elo Thresholds
                                 avg_a = calculate_team_elo(team_a)
                                 avg_b = calculate_team_elo(team_b)
                                 elo_diff = abs(avg_a - avg_b)
@@ -162,7 +153,7 @@ async def continuous_matchmaker(app):
                                 if elo_diff > threshold:
                                     break # Gap too high, break out and wait for threshold relaxation
 
-                                # 9. Match Execution & Ledger Commit
+                                # Match Execution & Ledger Commit
                                 map_rec = await conn.fetchrow("SELECT map_name FROM maps WHERE is_active = TRUE ORDER BY RANDOM() LIMIT 1")
                                 selected_map = map_rec['map_name'] if map_rec else "Training Grounds"
                                 match_id = uuid.uuid4()
@@ -179,17 +170,15 @@ async def continuous_matchmaker(app):
 
                                 await conn.execute('DELETE FROM matchmaking_queue WHERE party_id = ANY($1::uuid[])', used_party_ids)
 
-                                print(f"\n{'='*50}")
-                                print(f"🔥 [ARES DEPLOYMENT] MATCH_ID: {match_id}")
-                                print(f"🗺️  MAP: {selected_map} | REGION: {region} | TYPE: {match_type}")
+                                print(f"\n{'='*29}")
+                                print(f" [ARES DEPLOYMENT] MATCH_ID: {match_id}")
+                                print(f"  MAP: {selected_map} | REGION: {region} | TYPE: {match_type}")
                                 print(f"{'-'*50}")
-                                print(f"🔵 TEAM_ALPHA: {' + '.join([f'Party[{len(p)}]' for p in team_a])}")
-                                print(f"🔴 TEAM_BRAVO: {' + '.join([f'Party[{len(p)}]' for p in team_b])}")
-                                print(f"📊 AVG_ELO: {int((avg_a + avg_b)/2)} | ELO_DIFF: {int(elo_diff)}")
-                                print(f"{'='*50}\n")
+                                print(f" TEAM_ALPHA: {' + '.join([f'Party[{len(p)}]' for p in team_a])}")
+                                print(f" TEAM_BRAVO: {' + '.join([f'Party[{len(p)}]' for p in team_b])}")
+                                print(f" AVG_ELO: {int((avg_a + avg_b)/2)} | ELO_DIFF: {int(elo_diff)}")
+                                print(f"{'='*29}\n")
 
-                            # --- WEBSOCKET ALERT EXECUTION ---
-                            # This happens outside the DB transaction to prevent locking if WS hangs
                             match_payload = {
                                 "event": "MATCH_FOUND",
                                 "match_id": str(match_id),
@@ -205,11 +194,8 @@ async def continuous_matchmaker(app):
         except Exception as e:
             print(f"⚠️ [Matchmaker Fault] {e}")
         
-        # Engine Tick Rate: 3 Seconds
+        # Engine Tick Rate:3 Seconds
         await asyncio.sleep(3)
-
-
-# --- LIFESPAN MANAGEMENT ---
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -217,7 +203,7 @@ async def lifespan(app: FastAPI):
     await init_db()
     app.state.pool = await get_db_pool()
     
-    # Ignite both Engine cores simultaneously
+    #Start both engine core functions together
     cleanup_task = asyncio.create_task(continuous_cleanup(app))
     matchmaker_task = asyncio.create_task(continuous_matchmaker(app))
     
@@ -237,8 +223,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- ENDPOINTS ---
 
 @app.get("/")
 async def root():
@@ -370,14 +354,12 @@ async def get_leaderboard():
 async def get_system_stats():
     async with app.state.pool.acquire() as conn:
         queue_count = await conn.fetchval("SELECT count(*) FROM matchmaking_queue")
-        
         matches_today = await conn.fetchval('''
             SELECT count(*) FROM matches 
             WHERE created_at > NOW() - INTERVAL '24 hours'
         ''')
         
-        # --- NEW: Match Success Rate ---
-        # Calculates the percentage of players who successfully passed through the engine
+        #Match Success Rate 
         matched_players = await conn.fetchval('SELECT COUNT(DISTINCT player_id) FROM match_participants')
         total_players = await conn.fetchval('SELECT COUNT(*) FROM players')
         
