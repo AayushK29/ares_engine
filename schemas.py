@@ -5,7 +5,7 @@ class Player(BaseModel):
     username: str
     elo: int
     latency: int
-    region: str # Added region (e.g., "IN", "US-EAST", "EU-WEST")
+    region: str 
 
 class PartyJoin(BaseModel):
     players: List[Player]
