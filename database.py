@@ -8,14 +8,12 @@ async def get_db_pool():
 async def init_db():
     pool = await get_db_pool()
     async with pool.acquire() as conn:
-        # DROP in reverse order of dependencies to avoid Foreign Key errors
         await conn.execute('DROP TABLE IF EXISTS match_participants CASCADE;')
         await conn.execute('DROP TABLE IF EXISTS matches CASCADE;')
         await conn.execute('DROP TABLE IF EXISTS matchmaking_queue CASCADE;')
         await conn.execute('DROP TABLE IF EXISTS maps CASCADE;')
         await conn.execute('DROP TABLE IF EXISTS players CASCADE;')
         
-        # 1. Master Player Table
         await conn.execute('''
             CREATE TABLE players (
                 player_id UUID PRIMARY KEY,
@@ -25,7 +23,6 @@ async def init_db():
             );
         ''')
 
-        # 2. Active Queue (Transient data)
         await conn.execute('''
             CREATE TABLE matchmaking_queue (
                 player_id UUID PRIMARY KEY REFERENCES players(player_id),
@@ -37,7 +34,6 @@ async def init_db():
             );
         ''')
 
-        # 3. Maps Table
         await conn.execute('''
             CREATE TABLE maps (
                 map_id SERIAL PRIMARY KEY,
@@ -46,7 +42,6 @@ async def init_db():
             );
         ''')
 
-        # 4. Matches Ledger
         await conn.execute('''
             CREATE TABLE matches (
                 match_id UUID PRIMARY KEY,
@@ -59,7 +54,6 @@ async def init_db():
             );
         ''')
 
-        # 5. Junction Table (Linking Players to Matches)
         await conn.execute('''
             CREATE TABLE match_participants (
                 match_id UUID REFERENCES matches(match_id),
@@ -69,10 +63,7 @@ async def init_db():
             );
         ''')
 
-        # INDEXING for O(log N) search performance
         await conn.execute('CREATE INDEX idx_queue_region ON matchmaking_queue (region, last_seen);')
-        
-        # Seed maps
         await conn.execute("INSERT INTO maps (map_name) VALUES ('Bind'), ('Haven'), ('Split'), ('Ascent') ON CONFLICT DO NOTHING;")
 
     await pool.close()
