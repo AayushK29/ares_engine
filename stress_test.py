@@ -5,7 +5,7 @@ import time
 API_URL = "http://localhost:8000"
 
 def run_stress_test():
-    print("[STRESS_TEST] INITIALIZING MULTI-SIZE PARTY INJECTION...")
+    print("Start")
     total_players_added = 0
     for i in range(50): 
         party_size = random.randint(1, 5)
